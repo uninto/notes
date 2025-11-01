@@ -21,6 +21,10 @@
 				overflow: hidden;
 			}
 
+			body.has-maximized-card {
+				overflow: hidden;
+			}
+
 			body.is-mobile {
 				overflow-y: auto;
 			}
@@ -58,6 +62,12 @@
 			}
 
 			.card.maximized {
+				position: fixed;
+				inset: 0;
+				width: 100vw;
+				height: 100vh;
+				height: 100dvh;
+				border-radius: 0;
 				box-shadow: 0 28px 60px rgba(0, 0, 0, 0.4);
 			}
 
@@ -171,6 +181,32 @@
 				line-height: 1.4;
 				font-weight: 600;
 				color: rgba(0, 0, 0, 0.72);
+				word-break: break-word;
+				overflow-wrap: anywhere;
+				white-space: normal;
+			}
+
+			.card.maximized {
+				display: flex;
+				flex-direction: column;
+			}
+
+			.card.maximized .card-title {
+				display: none;
+			}
+
+			.card.maximized .card-body {
+				flex: 1;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				width: 100%;
+				height: 100%;
+				text-align: center;
+				padding: clamp(32px, min(10vw, 10vh), 128px);
+				padding-top: clamp(72px, min(14vw, 14vh), 192px);
+				font-size: clamp(48px, min(18vw, 18vh), 200px);
+				line-height: 1.05;
 			}
 
 			@media (max-width: 768px) {
@@ -229,13 +265,14 @@
 			// Reserve a very high层级给全屏卡片，避免被后续元素覆盖
 			const MAXIMIZED_LAYER = 1000000
 			let activeMaximizedCard = null
+			const pointerMediaQuery = window.matchMedia('(pointer: coarse)')
 			let isMobile =
-				window.matchMedia('(pointer: coarse)').matches ||
-				window.innerWidth <= 768
-			const maxCards = isMobile ? 120 : 180 // 限制 DOM 节点数量，减轻移动端压力
+				pointerMediaQuery.matches || window.innerWidth <= 768
+			let maxCards = isMobile ? 120 : 180 // 限制 DOM 节点数量，减轻移动端压力
 			const initialCardCount = isMobile ? 18 : 30
-			const spawnInterval = isMobile ? 700 : 400
+			let spawnInterval = isMobile ? 700 : 400
 			let zIndexCursor = 200
+			let spawnTimer = null
 
 			document.body.classList.toggle('is-mobile', isMobile)
 
@@ -249,10 +286,8 @@
 
 			function applyTransform(card, state) {
 				const scale = state.scale ?? 1
-				const translateX = state.translateX ?? 0
-				const translateY = state.translateY ?? 0
 				const angle = state.angle ?? 0
-				card.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale}) rotate(${angle}deg)`
+				card.style.transform = `scale(${scale}) rotate(${angle}deg)`
 			}
 
 			function bringToFront(card) {
@@ -269,48 +304,95 @@
 				card.style.zIndex = zIndexCursor
 			}
 
-			function setupCardInteractions(card) {
-				const header = card.querySelector('.card-header')
-				const closeBtn = card.querySelector('.control.close')
-				const minimizeBtn = card.querySelector('.control.minimize')
-				const maximizeBtn = card.querySelector('.control.maximize')
-
-				closeBtn.addEventListener('click', event => {
-					event.stopPropagation()
-					closeCard(card)
-				})
-
-				minimizeBtn.addEventListener('click', event => {
-					event.stopPropagation()
-					minimizeCard(card)
-				})
-
-				maximizeBtn.addEventListener('click', event => {
-					event.stopPropagation()
-					toggleMaximize(card)
-				})
-
-				header.addEventListener('pointerdown', event => {
-					if (event.pointerType === 'touch') return
-					startDrag(event, card)
-				})
-
-				card.addEventListener('pointerdown', () => {
-					bringToFront(card)
-				})
-
-				header.addEventListener('dblclick', event => {
-					if (!event.target.closest('.control')) {
-						toggleMaximize(card)
-					}
-				})
+			function updateBodyMaximizedState() {
+				document.body.classList.toggle(
+					'has-maximized-card',
+					Boolean(activeMaximizedCard)
+				)
 			}
+
+			function scheduleNextSpawn() {
+				clearTimeout(spawnTimer)
+				spawnTimer = setTimeout(() => {
+					if (!document.hidden) {
+						createCard()
+					}
+					scheduleNextSpawn()
+				}, spawnInterval)
+			}
+
+			function syncMobileMode() {
+				const nextIsMobile =
+					pointerMediaQuery.matches || window.innerWidth <= 768
+				if (nextIsMobile === isMobile) return
+
+				isMobile = nextIsMobile
+				maxCards = isMobile ? 120 : 180
+				spawnInterval = isMobile ? 700 : 400
+				document.body.classList.toggle('is-mobile', isMobile)
+				scheduleNextSpawn()
+			}
+
+			function handleBoardClick(event) {
+				const control = event.target.closest('.control')
+				if (!control) return
+
+				const card = control.closest('.card')
+				if (!card || !board.contains(card)) return
+
+				event.preventDefault()
+
+				if (control.classList.contains('close')) {
+					closeCard(card)
+				} else if (control.classList.contains('minimize')) {
+					minimizeCard(card)
+				} else if (control.classList.contains('maximize')) {
+					toggleMaximize(card)
+				}
+			}
+
+			function handleBoardPointerDown(event) {
+				const card = event.target.closest('.card')
+				if (!card || !board.contains(card)) return
+
+				const control = event.target.closest('.control')
+				const header = event.target.closest('.card-header')
+				const pointerType = event.pointerType || 'mouse'
+				const isPrimaryPointer = event.isPrimary !== false
+
+				if (
+					header &&
+					!control &&
+					pointerType !== 'touch' &&
+					isPrimaryPointer
+				) {
+					startDrag(event, card)
+					return
+				}
+
+				bringToFront(card)
+			}
+
+			function handleBoardDoubleClick(event) {
+				const header = event.target.closest('.card-header')
+				if (!header || event.target.closest('.control')) return
+
+				const card = header.closest('.card')
+				if (!card || !board.contains(card)) return
+
+				toggleMaximize(card)
+			}
+
+			board.addEventListener('click', handleBoardClick)
+			board.addEventListener('pointerdown', handleBoardPointerDown)
+			board.addEventListener('dblclick', handleBoardDoubleClick)
 
 			function closeCard(card) {
 				const state = cardStates.get(card)
 				if (!state || state.closing) return
 				if (card === activeMaximizedCard) {
 					activeMaximizedCard = null
+					updateBodyMaximizedState()
 				}
 				state.closing = true
 				state.scale = 0.1
@@ -362,16 +444,7 @@
 				}
 
 				if (state.maximized) {
-					activeMaximizedCard = null
-					state.maximized = false
-					card.classList.remove('maximized')
-					card.style.borderRadius = '12px'
-					state.left = 0
-					state.top = 0
-					state.scale = 1
-					state.angle = 0
-					applyTransform(card, state)
-
+					restoreFromMaximize(card, state)
 					requestAnimationFrame(() => {
 						requestAnimationFrame(runMinimize)
 					})
@@ -393,20 +466,29 @@
 			}
 
 			function maximizeCard(card, state) {
+				if (activeMaximizedCard && activeMaximizedCard !== card) {
+					const activeState = cardStates.get(activeMaximizedCard)
+					if (activeState) {
+						restoreFromMaximize(activeMaximizedCard, activeState)
+					}
+				}
+
 				state.beforeMaximize = {
 					left: state.left,
 					top: state.top,
 					scale: state.scale ?? 1,
+					angle: state.angle ?? 0,
 					width: card.offsetWidth,
 					height: card.offsetHeight,
-					angle: state.angle ?? 0
+					inlinePosition: card.style.position
 				}
 
 				card.classList.add('maximized')
+				card.style.position = 'fixed'
 				card.style.left = '0px'
 				card.style.top = '0px'
-				card.style.width = `${window.innerWidth}px`
-				card.style.height = `${window.innerHeight}px`
+				card.style.width = '100vw'
+				card.style.height = '100dvh'
 				card.style.borderRadius = '0'
 
 				state.left = 0
@@ -417,6 +499,7 @@
 				activeMaximizedCard = card
 				bringToFront(card)
 				state.maximized = true
+				updateBodyMaximizedState()
 			}
 
 			function restoreFromMaximize(card, state) {
@@ -424,6 +507,7 @@
 				if (!previous) return
 
 				card.classList.remove('maximized')
+				card.style.position = previous.inlinePosition || 'absolute'
 				card.style.left = `${previous.left}px`
 				card.style.top = `${previous.top}px`
 				card.style.width = `${previous.width}px`
@@ -438,16 +522,20 @@
 				state.maximized = false
 				if (activeMaximizedCard === card) {
 					activeMaximizedCard = null
+					updateBodyMaximizedState()
 				}
 				bringToFront(card)
-				state.lastPosition = { left: state.left, top: state.top }
-
 				setTimeout(() => {
 					if (!state.maximized) {
 						card.style.width = ''
 						card.style.height = ''
-						state.width = card.offsetWidth
-						state.height = card.offsetHeight
+						card.style.borderRadius = ''
+						if (previous.inlinePosition) {
+							card.style.position = previous.inlinePosition
+						} else {
+							card.style.position = ''
+						}
+						state.beforeMaximize = null
 					}
 				}, 360)
 			}
@@ -497,7 +585,6 @@
 
 				const handlePointerUp = () => {
 					state.dragging = false
-					state.lastPosition = { left: state.left, top: state.top }
 					card.classList.remove('dragging')
 					header.classList.remove('dragging')
 					if (dragFrame !== null) {
@@ -519,6 +606,7 @@
 				const color = randomFrom(colors)
 				const angleRange = isMobile ? 6 : 10
 				const angle = (Math.random() - 0.5) * angleRange
+				const entryScale = isMobile ? 0.8 : 0.65
 				const cardWidth = isMobile ? 180 : 220
 				const cardHeight = isMobile ? 130 : 140
 				const horizontalMargin = isMobile ? 12 : 16
@@ -535,6 +623,7 @@
 				card.style.background = color
 				card.style.left = `${left}px`
 				card.style.top = `${top}px`
+				card.style.opacity = '0'
 				if (activeMaximizedCard && zIndexCursor >= MAXIMIZED_LAYER - 2) {
 					zIndexCursor = MAXIMIZED_LAYER - 2
 				}
@@ -554,30 +643,24 @@
 
 				const state = {
 					angle,
-					scale: isMobile ? 0.85 : 0.7,
-					translateX: 0,
-					translateY: 0,
+					scale: entryScale,
 					left,
 					top,
 					maximized: false,
-					closing: false,
-					lastPosition: { left, top }
+					closing: false
 				}
 
 				cardStates.set(card, state)
 				applyTransform(card, state)
 				board.appendChild(card)
 
-				state.width = card.offsetWidth
-				state.height = card.offsetHeight
-
 				requestAnimationFrame(() => {
-					state.scale = 1
-					applyTransform(card, state)
-					card.style.opacity = '1'
+					requestAnimationFrame(() => {
+						state.scale = 1
+						applyTransform(card, state)
+						card.style.opacity = '1'
+					})
 				})
-
-				setupCardInteractions(card)
 
 				if (board.children.length > maxCards) {
 					const oldest = board.firstElementChild
@@ -591,22 +674,21 @@
 				setTimeout(createCard, i * (isMobile ? 60 : 40))
 			}
 
-			setInterval(() => {
-				createCard()
-			}, spawnInterval)
+			scheduleNextSpawn()
 
-			window.addEventListener('resize', () => {
-				isMobile =
-					window.matchMedia('(pointer: coarse)').matches ||
-					window.innerWidth <= 768
-				// 视口变化时重新切换移动端模式，并同步全屏卡片的宽高
-				document.body.classList.toggle('is-mobile', isMobile)
-
-				document.querySelectorAll('.card.maximized').forEach(card => {
-					card.style.width = `${window.innerWidth}px`
-					card.style.height = `${window.innerHeight}px`
-				})
+			document.addEventListener('visibilitychange', () => {
+				if (!document.hidden) {
+					scheduleNextSpawn()
+				}
 			})
+
+			if (typeof pointerMediaQuery.addEventListener === 'function') {
+				pointerMediaQuery.addEventListener('change', syncMobileMode)
+			} else if (typeof pointerMediaQuery.addListener === 'function') {
+				pointerMediaQuery.addListener(syncMobileMode)
+			}
+
+			window.addEventListener('resize', syncMobileMode)
 		</script>
 	</body>
 </html>
